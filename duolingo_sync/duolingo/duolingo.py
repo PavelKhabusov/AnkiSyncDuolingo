@@ -372,77 +372,131 @@ class Duolingo(object):
                 for topic in self.user_data.language_data[abbr]['skills']
                 if topic['learned'] and topic['strength'] < 1.0]
 
-    def get_vocabulary(self, abbr: str, source_language_abbr=None) -> List[WordInfo]:
-        """Get overview of user's vocabulary in a language.
-
-        >>> lingo.get_vocabulary(abbr=MY_FAVORITE_LANGUAGE_ABBREVIATION)
-        [{'text': ..., ...}, ...]
-
-        :param abbr: Language abbreviation of learning language
-        :param source_language_abbr: Language abbreviation of source language (default: user's UI language)
+    def get_vocabulary(self, abbreviation: str, source_language_abbreviation: str = None) -> List[WordInfo]:
         """
-        if abbr and not self._is_current_language(abbr):
-            self._switch_language(abbr)
+        Get any learned or encountered (but not yet learned) words for the user.
+
+        >>> lingo.get_vocabulary(abbreviation="hv")
+        [{'text': '...', ..., 'isNew': ...}...]
+
+        :param abbreviation: Language abbreviation of learning language
+        :param source_language_abbreviation: Language abbreviation of source language (default: user's UI language)
+        """
+        if abbreviation and not self._is_current_language(abbreviation):
+            self._switch_language(abbreviation)
 
         current_courses = self._get_data_by_user_id()["currentCourse"]["pathSectioned"]
+        progressed_skills_Ids = []
         progressed_skills = []
+
         for section in current_courses:
             completedUnits = section["completedUnits"]
             units = section["units"]
-            for i in range(completedUnits):
-                unit = units[i]
+            for unitIndex in range(len(units)):
+                unit = units[unitIndex]
+                if unitIndex > completedUnits:
+                    break
                 levels = unit["levels"]
-                for l in levels:
-                    level_type = l["type"]
-                    # unit review doesnt contain new words
-                    if level_type in ["chest", "unit_review"]:
+                for level in levels:
+                    if level['type'] != 'skill':
                         continue
-                    pathLevelClientData = l["pathLevelClientData"]
-                    finishedSessions = l["finishedSessions"]
+                    pathLevelClientData = level["pathLevelClientData"]
                     if "skillId" in pathLevelClientData:
-                        skillId = pathLevelClientData["skillId"]
-                        new_obj = {
-                            "finishedLevels": 1,
-                            "finishedSessions": finishedSessions,
-                            "skillId": {
-                                "id": skillId
-                            }
-                        }
-                        progressed_skills.append(new_obj)
+                        levelSkill = [pathLevelClientData['skillId']]
                     elif "skillIds" in pathLevelClientData:
-                        skillIds = pathLevelClientData["skillIds"]
-                        for skillId in skillIds:
+                        levelSkill = pathLevelClientData["skillIds"]
+                    else:
+                        levelSkill = []
+                    for levelSkillId in levelSkill:
+                        if levelSkillId not in progressed_skills_Ids:
+                            progressed_skills_Ids.append(levelSkillId)
+                            if unitIndex < completedUnits:
+                                finishedLevels = 1
+                                finishedSessions = 1234
+                            else:
+                                finishedLevels = 0
+                                finishedSessions = level["finishedSessions"]
                             new_obj = {
-                                "finishedLevels": 1,
+                                "finishedLevels": finishedLevels,
                                 "finishedSessions": finishedSessions,
                                 "skillId": {
-                                    "id": skillId
+                                    "id": levelSkillId
                                 }
                             }
                             progressed_skills.append(new_obj)
 
-        # updated URL, default language to be english,
-        current_index = 0
-        data = []
-        if source_language_abbr is None:
-            source_language_abbr = self.user_data.ui_language
-        while True:
-            overview_url = f"https://www.duolingo.com/2017-06-30/users/{self.user_data.id}/courses/{abbr}/{source_language_abbr}/learned-lexemes?sortBy=ALPHABETICAL&startIndex={current_index}"
-            overview_request = self._make_req(overview_url, data={
-                "lastTotalLexemeCount": 0,
-                "progressedSkills": progressed_skills
-            })
-            overview = overview_request.json()
-            learnedLexemes = overview['learnedLexemes']
-            data.extend(learnedLexemes)
-            pagination = overview['pagination']
-            totalLexemes = pagination['totalLexemes']
-            if len(data) >= totalLexemes:
-                break
+        if source_language_abbreviation is None:
+            source_language_abbreviation = self.user_data.ui_language
 
-            nextStartIndex = pagination['nextStartIndex']
-            current_index = nextStartIndex
-        return data
+        def get_learned_lexemes():
+            current_index = 0
+
+            result_lexemes = []
+            while True:
+                overview_url = f"https://www.duolingo.com/2017-06-30/users/{self.user_data.id}/courses/{abbreviation}/{source_language_abbreviation}/learned-lexemes?sortBy=ALPHABETICAL&startIndex={current_index}"
+                overview_request = self._make_req(overview_url, data={
+                    "lastTotalLexemeCount": 0,
+                    "progressedSkills": progressed_skills
+                })
+                overview = overview_request.json()
+                learned_lexemes = overview['learnedLexemes']
+                result_lexemes.extend(learned_lexemes)
+                pagination = overview['pagination']
+                totalLexemes = pagination['totalLexemes']
+                if len(result_lexemes) >= totalLexemes:
+                    break
+
+                nextStartIndex = pagination['nextStartIndex']
+                current_index = nextStartIndex
+
+            return result_lexemes
+
+        def get_practice_lexemes():
+            result_lexemes = []
+            current_index = 0
+            while True:
+                overview_url = f"https://www.duolingo.com/2017-06-30/users/{self.user_data.id}/courses/{abbreviation}/{source_language_abbreviation}/practice-lexemes?sortBy=ALPHABETICAL&startIndex={current_index}"
+                overview_request = self._make_req(overview_url, data={
+                    "lastTotalLexemeCount": 0,
+                    "progressedSkills": progressed_skills
+                })
+                overview = overview_request.json()
+                practice_lexemes = overview['practiceLexemes']
+                result_lexemes.extend(practice_lexemes)
+
+                if 'pagination' not in overview:
+                    # I'm not actually sure whether this endpoint _ever_ involves pagination. I haven't encoutnered it,
+                    # but that could be just because it's unusual to have a lot of words in progress.
+                    break
+
+                pagination = overview['pagination']
+                totalLexemes = pagination['totalLexemes']
+                if len(result_lexemes) >= totalLexemes:
+                    break
+
+                nextStartIndex = pagination['nextStartIndex']
+                current_index = nextStartIndex
+
+            for lexeme in result_lexemes:
+                if 'text' not in lexeme:
+                    lexeme['text'] = lexeme['word']
+
+                if 'translations' not in lexeme:
+                    lexeme['translations'] = [lexeme['translation']]
+
+            return result_lexemes
+
+        results = get_learned_lexemes()
+        lexeme_texts = set(lexeme['text'] for lexeme in results)
+
+        practice_lexemes = get_practice_lexemes()
+        for lexeme in practice_lexemes:
+            if lexeme['text'] not in lexeme_texts:
+                # Words sometimes appear in both results, so de-duplicate them.
+                results.append(lexeme)
+                lexeme_texts.add(lexeme['text'])
+
+        return results
 
     def get_daily_xp_progress(self):
         """
